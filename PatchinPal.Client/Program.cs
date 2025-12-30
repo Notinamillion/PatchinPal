@@ -84,6 +84,9 @@ namespace PatchinPal.Client
         {
             try
             {
+                // Show banner
+                ConsoleBanner.Show();
+
                 int port = int.Parse(ConfigurationManager.AppSettings["ListenPort"] ?? "8090");
 
                 Console.WriteLine($"Starting PatchinPal Client on port {port}...\n");
@@ -162,6 +165,8 @@ namespace PatchinPal.Client
 
         static void HandleCommandLine(string[] args)
         {
+            ConsoleBanner.ShowSmall();
+
             string command = args[0].ToLower();
             _updateManager = new UpdateManager();
 

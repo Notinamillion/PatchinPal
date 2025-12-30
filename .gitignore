@@ -96,3 +96,9 @@ $RECYCLE.BIN/
 
 # Version folders
 #v/
+
+# Temporary files and test artifacts
+nul
+*.zip
+ascii-art*.txt
+Gemini_Generated_Image_*.png

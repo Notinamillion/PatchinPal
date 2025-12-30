@@ -1,6 +1,7 @@
 using System;
 using System.Configuration;
 using System.Drawing;
+using System.IO;
 using System.Windows.Forms;
 using PatchinPal.Common;
 
@@ -22,6 +23,14 @@ namespace PatchinPal.Client
         {
             Application.ApplicationExit += OnApplicationExit;
 
+            // Initialize settings and logging
+            ClientSettings.Instance.ApplyLogLevel();
+            Logger.Info("PatchinPal Client starting...");
+            Logger.Info($"Logging enabled: {Logger.IsEnabled}, Level: {Logger.MinimumLevel}");
+
+            // Cleanup old logs
+            Logger.CleanupOldLogs(30);
+
             // Check if this is first run
             _isFirstRun = string.IsNullOrEmpty(ConfigurationManager.AppSettings["ServerAddress"]);
 
@@ -34,11 +43,13 @@ namespace PatchinPal.Client
             // Handle first run
             if (_isFirstRun)
             {
+                Logger.Info("First run detected");
                 HandleFirstRun();
             }
             else
             {
                 // Normal startup
+                Logger.Info("Client started successfully");
                 ShowBalloonTip("PatchinPal Client Started", "Running in background. Right-click icon for options.", ToolTipIcon.Info);
             }
         }
@@ -73,6 +84,7 @@ namespace PatchinPal.Client
             contextMenu.Items.Add("Install Updates", null, OnInstallUpdates);
             contextMenu.Items.Add(new ToolStripSeparator());
             contextMenu.Items.Add("View Status", null, OnViewStatus);
+            contextMenu.Items.Add("View Update History", null, OnViewHistory);
             contextMenu.Items.Add("Configure Server...", null, OnConfigureServer);
             contextMenu.Items.Add(new ToolStripSeparator());
 
@@ -81,13 +93,39 @@ namespace PatchinPal.Client
             autoStartItem.Click += OnToggleAutoStart;
             contextMenu.Items.Add(autoStartItem);
 
+            var notificationsItem = new ToolStripMenuItem("Show Notifications");
+            notificationsItem.Checked = ClientSettings.Instance.ShowNotifications;
+            notificationsItem.Click += OnToggleNotifications;
+            contextMenu.Items.Add(notificationsItem);
+
+            contextMenu.Items.Add("Settings...", null, OnOpenSettings);
+
             contextMenu.Items.Add(new ToolStripSeparator());
             contextMenu.Items.Add("Exit", null, OnExit);
 
-            // Create tray icon (using default application icon)
+            // Create tray icon with custom logo
+            Icon customIcon = null;
+            try
+            {
+                string iconPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "logo.ico");
+                if (File.Exists(iconPath))
+                {
+                    customIcon = new Icon(iconPath);
+                    Logger.Info("Loaded custom tray icon");
+                }
+                else
+                {
+                    Logger.Warning($"Custom icon not found at {iconPath}, using default");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to load custom icon, using default", ex);
+            }
+
             _trayIcon = new NotifyIcon
             {
-                Icon = SystemIcons.Application, // We'll use a default icon
+                Icon = customIcon ?? SystemIcons.Application,
                 ContextMenuStrip = contextMenu,
                 Visible = true,
                 Text = "PatchinPal Client"
@@ -136,21 +174,29 @@ namespace PatchinPal.Client
         {
             try
             {
+                Logger.Info("User initiated update check");
+                ShowBalloonTip("Checking for Updates", "Searching for available updates...", ToolTipIcon.Info, ClientSettings.Instance.ShowCheckNotifications);
+
                 var updates = _updateManager.CheckForUpdates();
+
+                UpdateHistory.RecordCheck(true, updates.Count, $"Found {updates.Count} update(s)");
 
                 if (updates.Count == 0)
                 {
-                    ShowBalloonTip("No Updates", "Your system is up to date.", ToolTipIcon.Info);
+                    Logger.Info("No updates available");
+                    ShowBalloonTip("No Updates", "Your system is up to date.", ToolTipIcon.Info, ClientSettings.Instance.ShowSuccessNotifications);
                 }
                 else
                 {
-                    ShowBalloonTip("Updates Available", $"{updates.Count} update(s) available. Right-click to install.", ToolTipIcon.Warning);
+                    Logger.Info($"Found {updates.Count} available updates");
+                    ShowBalloonTip("Updates Available", $"{updates.Count} update(s) available. Right-click to install.", ToolTipIcon.Warning, ClientSettings.Instance.ShowCheckNotifications);
                 }
             }
             catch (Exception ex)
             {
-                MessageBox.Show($"Error checking for updates: {ex.Message}", "Error",
-                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+                Logger.Error("Failed to check for updates", ex);
+                UpdateHistory.RecordCheck(false, 0, $"Error: {ex.Message}");
+                ShowBalloonTip("Check Failed", $"Error: {ex.Message}", ToolTipIcon.Error, ClientSettings.Instance.ShowErrorNotifications);
             }
         }
 
@@ -166,30 +212,38 @@ namespace PatchinPal.Client
             {
                 try
                 {
-                    ShowBalloonTip("Installing Updates", "Update installation in progress...", ToolTipIcon.Info);
+                    Logger.Info("User initiated update installation");
+                    ShowBalloonTip("Installing Updates", "Update installation in progress...", ToolTipIcon.Info, ClientSettings.Instance.ShowInstallNotifications);
+
+                    var updates = _updateManager.CheckForUpdates();
                     var response = _updateManager.InstallUpdates(false);
 
                     if (response.Success)
                     {
+                        Logger.Info($"Updates installed successfully, RebootRequired={response.Status == UpdateStatus.RebootRequired}");
+                        UpdateHistory.RecordInstall(true, updates.Count, response.Status == UpdateStatus.RebootRequired, response.Message, updates);
+
                         if (response.Status == UpdateStatus.RebootRequired)
                         {
-                            ShowBalloonTip("Updates Installed", "Updates installed successfully. Reboot required.", ToolTipIcon.Info);
+                            ShowBalloonTip("Updates Installed", "Updates installed successfully. Reboot required.", ToolTipIcon.Info, ClientSettings.Instance.ShowSuccessNotifications);
                         }
                         else
                         {
-                            ShowBalloonTip("Updates Installed", "Updates installed successfully.", ToolTipIcon.Info);
+                            ShowBalloonTip("Updates Installed", "Updates installed successfully.", ToolTipIcon.Info, ClientSettings.Instance.ShowSuccessNotifications);
                         }
                     }
                     else
                     {
-                        MessageBox.Show($"Update installation failed: {response.Message}", "Error",
-                            MessageBoxButtons.OK, MessageBoxIcon.Error);
+                        Logger.Error($"Update installation failed: {response.Message}");
+                        UpdateHistory.RecordInstall(false, 0, false, response.Message);
+                        ShowBalloonTip("Installation Failed", response.Message, ToolTipIcon.Error, ClientSettings.Instance.ShowErrorNotifications);
                     }
                 }
                 catch (Exception ex)
                 {
-                    MessageBox.Show($"Error installing updates: {ex.Message}", "Error",
-                        MessageBoxButtons.OK, MessageBoxIcon.Error);
+                    Logger.Error("Error installing updates", ex);
+                    UpdateHistory.RecordInstall(false, 0, false, $"Exception: {ex.Message}");
+                    ShowBalloonTip("Installation Error", ex.Message, ToolTipIcon.Error, ClientSettings.Instance.ShowErrorNotifications);
                 }
             }
         }
@@ -323,9 +377,69 @@ namespace PatchinPal.Client
             }
         }
 
-        private void ShowBalloonTip(string title, string text, ToolTipIcon icon)
+        private void ShowBalloonTip(string title, string text, ToolTipIcon icon, bool forceShow = true)
         {
-            _trayIcon?.ShowBalloonTip(3000, title, text, icon);
+            if (ClientSettings.Instance.ShowNotifications || forceShow)
+            {
+                _trayIcon?.ShowBalloonTip(3000, title, text, icon);
+            }
+        }
+
+        private void OnViewHistory(object sender, EventArgs e)
+        {
+            try
+            {
+                Logger.Info("User viewing update history");
+                string history = UpdateHistory.GetHistorySummary();
+                MessageBox.Show(history, "Update History", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to view history", ex);
+                MessageBox.Show($"Error viewing history: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void OnToggleNotifications(object sender, EventArgs e)
+        {
+            var menuItem = sender as ToolStripMenuItem;
+            if (menuItem == null) return;
+
+            ClientSettings.Instance.ShowNotifications = !ClientSettings.Instance.ShowNotifications;
+            ClientSettings.Instance.Save();
+            menuItem.Checked = ClientSettings.Instance.ShowNotifications;
+
+            string message = ClientSettings.Instance.ShowNotifications ? "Notifications enabled" : "Notifications disabled";
+            Logger.Info(message);
+            ShowBalloonTip("Notification Settings", message, ToolTipIcon.Info, true);
+        }
+
+        private void OnOpenSettings(object sender, EventArgs e)
+        {
+            try
+            {
+                Logger.Info("User opening settings");
+
+                string message = "Settings:\n\n" +
+                    $"Notifications: {(ClientSettings.Instance.ShowNotifications ? "Enabled" : "Disabled")}\n" +
+                    $"  - Check Notifications: {(ClientSettings.Instance.ShowCheckNotifications ? "On" : "Off")}\n" +
+                    $"  - Install Notifications: {(ClientSettings.Instance.ShowInstallNotifications ? "On" : "Off")}\n" +
+                    $"  - Success Notifications: {(ClientSettings.Instance.ShowSuccessNotifications ? "On" : "Off")}\n" +
+                    $"  - Error Notifications: {(ClientSettings.Instance.ShowErrorNotifications ? "On" : "Off")}\n\n" +
+                    $"Logging: {(ClientSettings.Instance.EnableLogging ? "Enabled" : "Disabled")}\n" +
+                    $"Log Level: {ClientSettings.Instance.LogLevel}\n\n" +
+                    "Use the tray menu to toggle notifications on/off.\n" +
+                    $"Settings file: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PatchinPal", "Client", "settings.json")}";
+
+                MessageBox.Show(message, "PatchinPal Settings", MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to open settings", ex);
+                MessageBox.Show($"Error opening settings: {ex.Message}", "Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
         }
     }
 }
