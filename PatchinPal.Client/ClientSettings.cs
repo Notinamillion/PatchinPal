@@ -20,6 +20,14 @@ namespace PatchinPal.Client
         // Update Settings
         public bool AutoInstallUpdates { get; set; } = false;
         public int CheckIntervalMinutes { get; set; } = 60;
+        public bool AggressiveMode { get; set; } = false;
+
+        // Reboot Settings
+        public bool EnableRebootWarnings { get; set; } = true;
+        public int RebootWarningIntervalMinutes { get; set; } = 30;
+        public bool AutoRebootEnabled { get; set; } = false;
+        public int AutoRebootHour { get; set; } = 3; // 3 AM default
+        public int AutoRebootMinute { get; set; } = 0;
 
         private static readonly string SettingsDirectory = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),

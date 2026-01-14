@@ -1,5 +1,6 @@
 using System;
 using System.Configuration;
+using System.Diagnostics;
 using System.IO;
 using System.Linq;
 using System.Runtime.InteropServices;
@@ -37,15 +38,35 @@ namespace PatchinPal.Client
         [STAThread]
         static void Main(string[] args)
         {
-            // Check for admin rights
+            // Check for admin rights and try to elevate if needed
             if (!IsAdministrator())
             {
-                MessageBox.Show(
-                    "PatchinPal Client requires Administrator privileges.\n\nPlease run as Administrator.",
-                    "Administrator Rights Required",
-                    MessageBoxButtons.OK,
-                    MessageBoxIcon.Error);
-                return;
+                try
+                {
+                    // Try to restart with elevation
+                    var startInfo = new ProcessStartInfo
+                    {
+                        UseShellExecute = true,
+                        WorkingDirectory = Environment.CurrentDirectory,
+                        FileName = Application.ExecutablePath,
+                        Verb = "runas",
+                        Arguments = string.Join(" ", args)
+                    };
+
+                    Process.Start(startInfo);
+                    return; // Exit this non-elevated instance
+                }
+                catch (Exception ex)
+                {
+                    // User cancelled UAC or elevation failed
+                    Logger.Error("Failed to elevate to administrator", ex);
+                    MessageBox.Show(
+                        "PatchinPal Client requires Administrator privileges.\n\nPlease run as Administrator.",
+                        "Administrator Rights Required",
+                        MessageBoxButtons.OK,
+                        MessageBoxIcon.Warning);
+                    return;
+                }
             }
 
             // Parse command line arguments
@@ -194,17 +215,20 @@ namespace PatchinPal.Client
 
         static void CheckForUpdates()
         {
+            Logger.Info("Checking for updates...");
             Console.WriteLine("\nChecking for updates...");
             var updates = _updateManager.CheckForUpdates();
 
             if (updates.Count == 0)
             {
+                Logger.Info("System is up to date");
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine("System is up to date!");
                 Console.ResetColor();
             }
             else
             {
+                Logger.Info($"Found {updates.Count} available update(s)");
                 Console.ForegroundColor = ConsoleColor.Yellow;
                 Console.WriteLine($"\n{updates.Count} update(s) available:");
                 Console.ResetColor();
@@ -221,17 +245,20 @@ namespace PatchinPal.Client
 
         static void InstallUpdates(bool aggressive)
         {
+            Logger.Info($"Installing updates{(aggressive ? " (AGGRESSIVE MODE)" : "")}...");
             Console.WriteLine($"\nInstalling updates{(aggressive ? " (AGGRESSIVE MODE)" : "")}...");
             var result = _updateManager.InstallUpdates(aggressive);
 
             if (result.Success)
             {
+                Logger.Info("Updates installed successfully");
                 Console.ForegroundColor = ConsoleColor.Green;
                 Console.WriteLine($"Updates installed successfully!");
                 Console.ResetColor();
 
                 if (result.Status == UpdateStatus.RebootRequired)
                 {
+                    Logger.Warning("System reboot required");
                     Console.ForegroundColor = ConsoleColor.Yellow;
                     Console.WriteLine("A system reboot is required.");
                     Console.ResetColor();
@@ -239,6 +266,7 @@ namespace PatchinPal.Client
             }
             else
             {
+                Logger.Error($"Installation failed: {result.Message}");
                 Console.ForegroundColor = ConsoleColor.Red;
                 Console.WriteLine($"Installation failed: {result.Message}");
                 Console.ResetColor();

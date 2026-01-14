@@ -2,6 +2,7 @@ using System;
 using System.Configuration;
 using System.Drawing;
 using System.IO;
+using System.Timers;
 using System.Windows.Forms;
 using PatchinPal.Common;
 
@@ -17,6 +18,8 @@ namespace PatchinPal.Client
         private ScheduleManager _scheduleManager;
         private ServerReporter _serverReporter;
         private HttpServer _httpServer;
+        private RebootManager _rebootManager;
+        private System.Timers.Timer _updateCheckTimer;
         private bool _isFirstRun;
 
         public TrayApplicationContext()
@@ -64,13 +67,26 @@ namespace PatchinPal.Client
                 _scheduleManager = new ScheduleManager(_updateManager);
                 _serverReporter = new ServerReporter(_updateManager);
                 _httpServer = new HttpServer(port, _updateManager, _scheduleManager);
+                _rebootManager = new RebootManager();
+
+                // Subscribe to reboot events
+                _rebootManager.RebootPendingDetected += OnRebootPendingDetected;
+                _rebootManager.RebootWarningNeeded += OnRebootWarningNeeded;
 
                 _httpServer.Start();
                 _scheduleManager.Start();
                 _serverReporter.Start();
+                _rebootManager.Start();
+
+                // Start automatic update checking if AutoInstallUpdates or AggressiveMode is enabled
+                if (ClientSettings.Instance.AutoInstallUpdates || ClientSettings.Instance.AggressiveMode)
+                {
+                    StartAutomaticUpdateChecking();
+                }
             }
             catch (Exception ex)
             {
+                Logger.Error("Error initializing PatchinPal Client", ex);
                 MessageBox.Show($"Error initializing PatchinPal Client: {ex.Message}", "Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -98,6 +114,13 @@ namespace PatchinPal.Client
             notificationsItem.Click += OnToggleNotifications;
             contextMenu.Items.Add(notificationsItem);
 
+            var aggressiveModeItem = new ToolStripMenuItem("Aggressive Mode");
+            aggressiveModeItem.Checked = ClientSettings.Instance.AggressiveMode;
+            aggressiveModeItem.Click += OnToggleAggressiveMode;
+            contextMenu.Items.Add(aggressiveModeItem);
+
+            contextMenu.Items.Add(new ToolStripSeparator());
+            contextMenu.Items.Add("Reboot Now", null, OnRebootNow);
             contextMenu.Items.Add("Settings...", null, OnOpenSettings);
 
             contextMenu.Items.Add(new ToolStripSeparator());
@@ -369,6 +392,9 @@ namespace PatchinPal.Client
             _httpServer?.Stop();
             _scheduleManager?.Stop();
             _serverReporter?.Stop();
+            _rebootManager?.Stop();
+            _updateCheckTimer?.Stop();
+            _updateCheckTimer?.Dispose();
 
             if (_trayIcon != null)
             {
@@ -421,6 +447,8 @@ namespace PatchinPal.Client
             {
                 Logger.Info("User opening settings");
 
+                string rebootStatus = _rebootManager?.IsRebootPending() == true ? "YES - Reboot Required!" : "No";
+
                 string message = "Settings:\n\n" +
                     $"Notifications: {(ClientSettings.Instance.ShowNotifications ? "Enabled" : "Disabled")}\n" +
                     $"  - Check Notifications: {(ClientSettings.Instance.ShowCheckNotifications ? "On" : "Off")}\n" +
@@ -429,7 +457,11 @@ namespace PatchinPal.Client
                     $"  - Error Notifications: {(ClientSettings.Instance.ShowErrorNotifications ? "On" : "Off")}\n\n" +
                     $"Logging: {(ClientSettings.Instance.EnableLogging ? "Enabled" : "Disabled")}\n" +
                     $"Log Level: {ClientSettings.Instance.LogLevel}\n\n" +
-                    "Use the tray menu to toggle notifications on/off.\n" +
+                    $"Aggressive Mode: {(ClientSettings.Instance.AggressiveMode ? "Enabled" : "Disabled")}\n" +
+                    $"Reboot Warnings: {(ClientSettings.Instance.EnableRebootWarnings ? "Enabled" : "Disabled")}\n" +
+                    $"Warning Interval: Every {ClientSettings.Instance.RebootWarningIntervalMinutes} minutes\n\n" +
+                    $"Reboot Pending: {rebootStatus}\n\n" +
+                    "Use the tray menu to toggle settings.\n" +
                     $"Settings file: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), "PatchinPal", "Client", "settings.json")}";
 
                 MessageBox.Show(message, "PatchinPal Settings", MessageBoxButtons.OK, MessageBoxIcon.Information);
@@ -439,6 +471,174 @@ namespace PatchinPal.Client
                 Logger.Error("Failed to open settings", ex);
                 MessageBox.Show($"Error opening settings: {ex.Message}", "Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void OnToggleAggressiveMode(object sender, EventArgs e)
+        {
+            var menuItem = sender as ToolStripMenuItem;
+            if (menuItem == null) return;
+
+            ClientSettings.Instance.AggressiveMode = !ClientSettings.Instance.AggressiveMode;
+            ClientSettings.Instance.Save();
+            menuItem.Checked = ClientSettings.Instance.AggressiveMode;
+
+            string message = ClientSettings.Instance.AggressiveMode
+                ? "Aggressive Mode enabled - Updates will be installed automatically and reboot warnings will be shown"
+                : "Aggressive Mode disabled";
+
+            Logger.Info(message);
+            ShowBalloonTip("Aggressive Mode", message, ToolTipIcon.Info, true);
+
+            // If aggressive mode was just enabled and reboot is pending, start warnings
+            if (ClientSettings.Instance.AggressiveMode && _rebootManager?.IsRebootPending() == true)
+            {
+                ShowBalloonTip("Reboot Required", "System restart is required to complete updates. Click 'Reboot Now' in the menu when ready.", ToolTipIcon.Warning, true);
+            }
+        }
+
+        private void OnRebootNow(object sender, EventArgs e)
+        {
+            try
+            {
+                bool rebootPending = _rebootManager?.IsRebootPending() ?? false;
+                string message = rebootPending
+                    ? "A system restart is required to complete updates.\n\nReboot now?"
+                    : "Are you sure you want to restart your computer now?";
+
+                var result = MessageBox.Show(message, "Confirm Reboot", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+
+                if (result == DialogResult.Yes)
+                {
+                    Logger.Warning("User initiated system reboot");
+                    _rebootManager?.InitiateReboot(30);
+                    ShowBalloonTip("Rebooting", "System will restart in 30 seconds...", ToolTipIcon.Warning, true);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Failed to initiate reboot", ex);
+                MessageBox.Show($"Error initiating reboot: {ex.Message}", "Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+            }
+        }
+
+        private void OnRebootPendingDetected(object sender, RebootPendingEventArgs e)
+        {
+            Logger.Warning($"Reboot pending detected at {e.DetectedTime}");
+
+            if (ClientSettings.Instance.AggressiveMode && ClientSettings.Instance.EnableRebootWarnings)
+            {
+                ShowBalloonTip("Reboot Required",
+                    "Windows updates require a system restart. Click 'Reboot Now' when convenient.",
+                    ToolTipIcon.Warning, true);
+            }
+        }
+
+        private void OnRebootWarningNeeded(object sender, EventArgs e)
+        {
+            if (ClientSettings.Instance.AggressiveMode && ClientSettings.Instance.EnableRebootWarnings)
+            {
+                ShowBalloonTip("Reboot Still Required",
+                    "Your system still needs to restart to complete updates. Please reboot soon.",
+                    ToolTipIcon.Warning, true);
+            }
+        }
+
+        private void StartAutomaticUpdateChecking()
+        {
+            if (_updateCheckTimer != null)
+            {
+                _updateCheckTimer.Stop();
+                _updateCheckTimer.Dispose();
+            }
+
+            int intervalMs = ClientSettings.Instance.CheckIntervalMinutes * 60 * 1000;
+            _updateCheckTimer = new System.Timers.Timer(intervalMs);
+            _updateCheckTimer.Elapsed += OnAutomaticUpdateCheck;
+            _updateCheckTimer.AutoReset = true;
+            _updateCheckTimer.Start();
+
+            Logger.Info($"Automatic update checking started - interval: {ClientSettings.Instance.CheckIntervalMinutes} minutes");
+
+            // Do an immediate check on startup
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                System.Threading.Thread.Sleep(5000); // Wait 5 seconds after startup
+                OnAutomaticUpdateCheck(null, null);
+            });
+        }
+
+        private void OnAutomaticUpdateCheck(object sender, ElapsedEventArgs e)
+        {
+            try
+            {
+                Logger.Info("Automatic update check started");
+                var updates = _updateManager.CheckForUpdates();
+
+                UpdateHistory.RecordCheck(true, updates.Count, $"Found {updates.Count} update(s)");
+
+                if (updates.Count > 0)
+                {
+                    Logger.Info($"Found {updates.Count} available updates in automatic check");
+
+                    if (ClientSettings.Instance.AggressiveMode && ClientSettings.Instance.AutoInstallUpdates)
+                    {
+                        // Auto-install if aggressive mode is on
+                        Logger.Info("Aggressive mode enabled - auto-installing updates");
+                        ShowBalloonTip("Installing Updates",
+                            $"Automatically installing {updates.Count} update(s)...",
+                            ToolTipIcon.Info,
+                            ClientSettings.Instance.ShowInstallNotifications);
+
+                        var result = _updateManager.InstallUpdates(true);
+
+                        if (result.Success)
+                        {
+                            Logger.Info($"Auto-install completed successfully, RebootRequired={result.Status == UpdateStatus.RebootRequired}");
+                            UpdateHistory.RecordInstall(true, updates.Count, result.Status == UpdateStatus.RebootRequired, result.Message, updates);
+
+                            if (result.Status == UpdateStatus.RebootRequired)
+                            {
+                                ShowBalloonTip("Updates Installed - Reboot Required",
+                                    "Updates were installed automatically. System restart required.",
+                                    ToolTipIcon.Warning, true);
+                            }
+                            else
+                            {
+                                ShowBalloonTip("Updates Installed",
+                                    $"{updates.Count} update(s) installed successfully.",
+                                    ToolTipIcon.Info,
+                                    ClientSettings.Instance.ShowSuccessNotifications);
+                            }
+                        }
+                        else
+                        {
+                            Logger.Error($"Auto-install failed: {result.Message}");
+                            UpdateHistory.RecordInstall(false, 0, false, result.Message);
+                            ShowBalloonTip("Auto-Install Failed",
+                                result.Message,
+                                ToolTipIcon.Error,
+                                ClientSettings.Instance.ShowErrorNotifications);
+                        }
+                    }
+                    else
+                    {
+                        // Just notify user
+                        ShowBalloonTip("Updates Available",
+                            $"{updates.Count} update(s) available. Right-click tray icon to install.",
+                            ToolTipIcon.Info,
+                            ClientSettings.Instance.ShowCheckNotifications);
+                    }
+                }
+                else
+                {
+                    Logger.Info("System is up to date (automatic check)");
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Error("Automatic update check failed", ex);
+                UpdateHistory.RecordCheck(false, 0, $"Error: {ex.Message}");
             }
         }
     }
