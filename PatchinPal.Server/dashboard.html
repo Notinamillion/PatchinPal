@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang='en'>
+<head>
+    <meta charset='UTF-8'>
+    <meta name='viewport' content='width=device-width, initial-scale=1.0'>
+    <title>PatchinPal Server Dashboard</title>
+    <style>
+        * { margin: 0; padding: 0; box-sizing: border-box; }
+        body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background: #1e1e1e; color: #d4d4d4; padding: 20px; }
+        .container { max-width: 1400px; margin: 0 auto; }
+        h1 { color: #4ec9b0; margin-bottom: 30px; display: flex; align-items: center; gap: 10px; }
+        .status-badge { background: #4ec9b0; color: #1e1e1e; padding: 4px 12px; border-radius: 12px; font-size: 14px; }
+        .controls { background: #252526; padding: 20px; border-radius: 8px; margin-bottom: 20px; display: flex; gap: 10px; flex-wrap: wrap; }
+        button { background: #0e639c; color: white; border: none; padding: 10px 20px; border-radius: 4px; cursor: pointer; font-size: 14px; transition: all 0.3s; }
+        button:hover { background: #1177bb; }
+        button:active { transform: scale(0.98); }
+        button:disabled { background: #3c3c3c; cursor: not-allowed; }
+        .refresh-btn { background: #4ec9b0; color: #1e1e1e; }
+        .refresh-btn:hover { background: #5fd9c0; }
+        .machines-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(350px, 1fr)); gap: 20px; }
+        .machine-card { background: #252526; border-radius: 8px; padding: 20px; border: 1px solid #3c3c3c; transition: all 0.3s; }
+        .machine-card:hover { border-color: #4ec9b0; transform: translateY(-2px); box-shadow: 0 4px 12px rgba(78, 201, 176, 0.1); }
+        .machine-header { display: flex; justify-content: space-between; align-items: start; margin-bottom: 15px; }
+        .machine-name { color: #4ec9b0; font-size: 18px; font-weight: bold; }
+        .machine-ip { color: #ce9178; font-size: 14px; }
+        .online-status { width: 10px; height: 10px; border-radius: 50%; }
+        .online { background: #4ec9b0; box-shadow: 0 0 8px #4ec9b0; }
+        .offline { background: #f48771; box-shadow: 0 0 8px #f48771; }
+        .machine-info { margin: 10px 0; }
+        .info-row { display: flex; justify-content: space-between; padding: 8px 0; border-bottom: 1px solid #3c3c3c; }
+        .info-label { color: #858585; font-size: 13px; }
+        .info-value { color: #d4d4d4; font-size: 13px; }
+        .updates-badge { background: #f48771; color: white; padding: 2px 8px; border-radius: 10px; font-size: 12px; font-weight: bold; }
+        .no-updates { background: #4ec9b0; }
+        .machine-actions { margin-top: 15px; display: flex; gap: 8px; }
+        .action-btn { padding: 8px 16px; font-size: 13px; flex: 1; }
+        .loading { text-align: center; padding: 40px; color: #858585; }
+        .message { background: #0e639c; color: white; padding: 12px 20px; border-radius: 4px; margin-bottom: 20px; display: none; }
+        .message.show { display: block; animation: fadeIn 0.3s; }
+        .message.success { background: #4ec9b0; color: #1e1e1e; }
+        .message.error { background: #f48771; }
+        .message.loading { background: #ce9178; color: #1e1e1e; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+        .action-btn.loading { background: #ce9178; position: relative; }
+        .action-btn.loading::after { content: '⏳'; margin-left: 5px; }
+        .logs-panel { background: #252526; border-radius: 8px; padding: 20px; margin-top: 20px; max-height: 300px; overflow-y: auto; }
+        .log-entry { font-family: 'Consolas', monospace; font-size: 12px; padding: 5px; border-left: 2px solid #3c3c3c; margin-bottom: 5px; }
+        .log-entry.info { border-left-color: #4ec9b0; color: #4ec9b0; }
+        .log-entry.warn { border-left-color: #ce9178; color: #ce9178; }
+        .log-entry.error { border-left-color: #f48771; color: #f48771; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(-10px); } to { opacity: 1; transform: translateY(0); } }
+    </style>
+</head>
+<body>
+    <div class='container'>
+        <h1>
+            PatchinPal Server Dashboard
+            <span class='status-badge'>ONLINE</span>
+        </h1>
+
+        <div class='message' id='message'></div>
+
+        <div class='controls'>
+            <button class='refresh-btn' onclick='loadMachines()'>🔄 Refresh</button>
+            <button onclick='scanNetwork()'>🔍 Scan Network</button>
+            <button onclick='checkAllUpdates()'>📥 Check All Updates</button>
+        </div>
+
+        <div class='machines-grid' id='machines'>
+            <div class='loading'>Loading machines...</div>
+        </div>
+
+        <div class='logs-panel' id='logs' style='display: none;'>
+            <h3 style='color: #4ec9b0; margin-bottom: 10px;'>Activity Log</h3>
+            <div id='log-entries'></div>
+        </div>
+    </div>
+
+    <script>
+        function showMessage(text, duration = 3000, type = 'info') {
+            const msg = document.getElementById('message');
+            msg.textContent = text;
+            msg.className = 'message show ' + type;
+            if (duration > 0) {
+                setTimeout(() => msg.classList.remove('show'), duration);
+            }
+        }
+
+        function addLog(message, type = 'info') {
+            const logsPanel = document.getElementById('logs');
+            const logEntries = document.getElementById('log-entries');
+            logsPanel.style.display = 'block';
+
+            const entry = document.createElement('div');
+            entry.className = 'log-entry ' + type;
+            const timestamp = new Date().toLocaleTimeString();
+            entry.textContent = `[${timestamp}] ${message}`;
+
+            logEntries.insertBefore(entry, logEntries.firstChild);
+
+            // Keep only last 50 entries
+            while (logEntries.children.length > 50) {
+                logEntries.removeChild(logEntries.lastChild);
+            }
+        }
+
+        function parseDate(dateStr) {
+            if (!dateStr) return null;
+            // Handle JavaScriptSerializer format: /Date(1234567890)/
+            const match = dateStr.match(/\/Date\((\d+)\)\//);
+            if (match) {
+                return new Date(parseInt(match[1]));
+            }
+            return new Date(dateStr);
+        }
+
+        function getStatusText(status) {
+            const statuses = ['Unknown', 'Up to Date', 'Updates Available', 'Updating', 'Failed', 'Reboot Required'];
+            return statuses[status] || 'Unknown';
+        }
+
+        async function loadMachines() {
+            try {
+                const response = await fetch('/api/clients');
+                const data = await response.json();
+                console.log('Loaded machines:', data);
+                displayMachines(data.machines || []);
+            } catch (error) {
+                console.error('Error loading machines:', error);
+                document.getElementById('machines').innerHTML = '<div class="loading">Error loading machines: ' + error.message + '</div>';
+            }
+        }
+
+        function displayMachines(machines) {
+            const container = document.getElementById('machines');
+            if (machines.length === 0) {
+                container.innerHTML = '<div class="loading">No machines found. Try scanning the network.</div>';
+                return;
+            }
+
+            try {
+                container.innerHTML = machines.map(m => {
+                    const lastSeen = parseDate(m.LastSeen);
+                    const lastSeenStr = lastSeen ? lastSeen.toLocaleString() : 'Never';
+                    const statusText = getStatusText(m.Status);
+
+                    return `
+                    <div class='machine-card'>
+                        <div class='machine-header'>
+                            <div>
+                                <div class='machine-name'>${m.HostName || 'Unknown'}</div>
+                                <div class='machine-ip'>${m.IpAddress}</div>
+                            </div>
+                            <div class='online-status ${m.IsOnline ? 'online' : 'offline'}'></div>
+                        </div>
+                        <div class='machine-info'>
+                            <div class='info-row'>
+                                <span class='info-label'>OS Version</span>
+                                <span class='info-value'>${m.OsVersion || 'Unknown'}</span>
+                            </div>
+                            <div class='info-row'>
+                                <span class='info-label'>Build</span>
+                                <span class='info-value'>${m.OsBuild || 'Unknown'}</span>
+                            </div>
+                            <div class='info-row'>
+                                <span class='info-label'>Last Seen</span>
+                                <span class='info-value'>${lastSeenStr}</span>
+                            </div>
+                            <div class='info-row'>
+                                <span class='info-label'>Pending Updates</span>
+                                <span class='info-value'>
+                                    <span class='updates-badge ${m.PendingUpdates === 0 ? 'no-updates' : ''}'>${m.PendingUpdates || 0}</span>
+                                </span>
+                            </div>
+                            <div class='info-row'>
+                                <span class='info-label'>Status</span>
+                                <span class='info-value'>${statusText}</span>
+                            </div>
+                        </div>
+                        <div class='machine-actions'>
+                            <button class='action-btn' onclick='updateMachine(\"${m.IpAddress}\")'>Install Updates</button>
+                            <button class='action-btn' onclick='scheduleMachine(\"${m.IpAddress}\")'>Schedule</button>
+                        </div>
+                    </div>
+                `;
+                }).join('');
+            } catch (error) {
+                console.error('Error displaying machines:', error);
+                container.innerHTML = '<div class="loading">Error displaying machines: ' + error.message + '</div>';
+            }
+        }
+
+        async function scanNetwork() {
+            try {
+                showMessage('Scanning network... Check server console for results');
+                await fetch('/api/scan', { method: 'POST' });
+                setTimeout(loadMachines, 3000);
+            } catch (error) {
+                showMessage('Error scanning network');
+            }
+        }
+
+        async function checkAllUpdates() {
+            try {
+                showMessage('Checking updates on all machines... Check server console');
+                await fetch('/api/check', { method: 'POST' });
+            } catch (error) {
+                showMessage('Error checking updates');
+            }
+        }
+
+        async function updateMachine(ip) {
+            const button = event.target;
+            const originalText = button.textContent;
+
+            try {
+                button.disabled = true;
+                button.classList.add('loading');
+                button.textContent = 'Installing...';
+
+                showMessage(`Installing updates on ${ip}...`, 0, 'loading');
+                addLog(`Started installing updates on ${ip}`, 'info');
+
+                const response = await fetch(`/api/update/${ip}`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.success) {
+                    showMessage(`✓ Update command sent to ${ip}`, 5000, 'success');
+                    addLog(`Update initiated on ${ip} - Check machine for progress`, 'info');
+                } else {
+                    showMessage(`✗ Failed to update ${ip}`, 5000, 'error');
+                    addLog(`Failed to update ${ip}: ${result.error || 'Unknown error'}`, 'error');
+                }
+
+                setTimeout(loadMachines, 2000);
+            } catch (error) {
+                showMessage(`✗ Error: ${error.message}`, 5000, 'error');
+                addLog(`Error updating ${ip}: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+                button.classList.remove('loading');
+                button.textContent = originalText;
+            }
+        }
+
+        async function scheduleMachine(ip) {
+            const button = event.target;
+            const originalText = button.textContent;
+
+            try {
+                button.disabled = true;
+                button.classList.add('loading');
+
+                showMessage(`Scheduling updates for ${ip}...`, 0, 'loading');
+                addLog(`Scheduling updates for ${ip}`, 'info');
+
+                const response = await fetch(`/api/schedule/${ip}`, { method: 'POST' });
+                const result = await response.json();
+
+                if (result.success) {
+                    showMessage(`✓ Updates scheduled for ${ip}`, 5000, 'success');
+                    addLog(result.message || `Updates scheduled for ${ip}`, 'info');
+                } else {
+                    showMessage(`✗ Failed to schedule ${ip}`, 5000, 'error');
+                    addLog(`Failed to schedule ${ip}: ${result.error || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                showMessage(`✗ Error: ${error.message}`, 5000, 'error');
+                addLog(`Error scheduling ${ip}: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+                button.classList.remove('loading');
+                button.textContent = originalText;
+            }
+        }
+
+        loadMachines();
+        setInterval(loadMachines, 30000);
+    </script>
+</body>
+</html>
+

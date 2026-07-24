@@ -10,6 +10,11 @@ namespace PatchinPal.Common
     [DataContract]
     public class MachineInfo
     {
+        public MachineInfo()
+        {
+            ClientPort = 8090;
+        }
+
         [DataMember]
         public string IpAddress { get; set; }
 
@@ -35,7 +40,7 @@ namespace PatchinPal.Common
         public int PendingUpdates { get; set; }
 
         [DataMember]
-        public int ClientPort { get; set; } = 8090;
+        public int ClientPort { get; set; }
 
         [DataMember]
         public UpdateStatus Status { get; set; }
