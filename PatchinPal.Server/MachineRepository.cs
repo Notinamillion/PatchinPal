@@ -17,6 +17,7 @@ namespace PatchinPal.Server
         private readonly string _machinesFile;
         private readonly JavaScriptSerializer _serializer;
         private Dictionary<string, MachineInfo> _machines;
+        private readonly object _lock = new object();
 
         public MachineRepository()
         {
@@ -49,10 +50,13 @@ namespace PatchinPal.Server
                 string json = File.ReadAllText(_machinesFile);
                 var machineList = _serializer.Deserialize<List<MachineInfo>>(json);
 
-                _machines.Clear();
-                foreach (var machine in machineList)
+                lock (_lock)
                 {
-                    _machines[machine.IpAddress] = machine;
+                    _machines.Clear();
+                    foreach (var machine in machineList)
+                    {
+                        _machines[machine.IpAddress] = machine;
+                    }
                 }
 
                 Console.WriteLine($"Loaded machine database from: {_machinesFile}");
@@ -72,7 +76,12 @@ namespace PatchinPal.Server
         {
             try
             {
-                var machineList = _machines.Values.ToList();
+                List<MachineInfo> machineList;
+                lock (_lock)
+                {
+                    machineList = _machines.Values.ToList();
+                }
+
                 string json = _serializer.Serialize(machineList);
 
                 // Pretty print JSON
@@ -94,26 +103,28 @@ namespace PatchinPal.Server
         /// </summary>
         public void AddOrUpdateMachine(MachineInfo machine)
         {
-            if (_machines.ContainsKey(machine.IpAddress))
+            lock (_lock)
             {
-                // Update existing machine
-                var existing = _machines[machine.IpAddress];
+                if (_machines.ContainsKey(machine.IpAddress))
+                {
+                    // Update existing machine — preserve fields that the new report may not include
+                    var existing = _machines[machine.IpAddress];
 
-                // Preserve some fields from existing record
-                machine.LastUpdateCheck = existing.LastUpdateCheck;
-
-                // Update fields
-                existing.HostName = machine.HostName;
-                existing.OsVersion = machine.OsVersion;
-                existing.OsBuild = machine.OsBuild;
-                existing.IsOnline = machine.IsOnline;
-                existing.LastSeen = machine.LastSeen;
-                existing.Status = machine.Status;
-            }
-            else
-            {
-                // Add new machine
-                _machines[machine.IpAddress] = machine;
+                    existing.HostName = machine.HostName ?? existing.HostName;
+                    existing.OsVersion = machine.OsVersion ?? existing.OsVersion;
+                    existing.OsBuild = machine.OsBuild ?? existing.OsBuild;
+                    existing.IsOnline = machine.IsOnline;
+                    existing.LastSeen = machine.LastSeen;
+                    existing.LastUpdateCheck = machine.LastUpdateCheck ?? existing.LastUpdateCheck;
+                    existing.PendingUpdates = machine.PendingUpdates;
+                    existing.ClientPort = machine.ClientPort > 0 ? machine.ClientPort : existing.ClientPort;
+                    existing.Status = machine.Status;
+                }
+                else
+                {
+                    // Add new machine
+                    _machines[machine.IpAddress] = machine;
+                }
             }
         }
 
@@ -122,7 +133,10 @@ namespace PatchinPal.Server
         /// </summary>
         public MachineInfo GetMachine(string ipAddress)
         {
-            return _machines.ContainsKey(ipAddress) ? _machines[ipAddress] : null;
+            lock (_lock)
+            {
+                return _machines.ContainsKey(ipAddress) ? _machines[ipAddress] : null;
+            }
         }
 
         /// <summary>
@@ -130,7 +144,10 @@ namespace PatchinPal.Server
         /// </summary>
         public List<MachineInfo> GetAllMachines()
         {
-            return _machines.Values.ToList();
+            lock (_lock)
+            {
+                return _machines.Values.ToList();
+            }
         }
 
         /// <summary>
@@ -138,7 +155,10 @@ namespace PatchinPal.Server
         /// </summary>
         public bool RemoveMachine(string ipAddress)
         {
-            return _machines.Remove(ipAddress);
+            lock (_lock)
+            {
+                return _machines.Remove(ipAddress);
+            }
         }
 
         /// <summary>
@@ -147,7 +167,10 @@ namespace PatchinPal.Server
         public List<MachineInfo> GetStaleMachines(TimeSpan threshold)
         {
             var cutoff = DateTime.Now - threshold;
-            return _machines.Values.Where(m => m.LastSeen < cutoff).ToList();
+            lock (_lock)
+            {
+                return _machines.Values.Where(m => m.LastSeen < cutoff).ToList();
+            }
         }
 
         /// <summary>
@@ -155,13 +178,16 @@ namespace PatchinPal.Server
         /// </summary>
         public (int total, int online, int offline, int needingUpdates) GetStatistics()
         {
-            var machines = _machines.Values.ToList();
-            return (
-                total: machines.Count,
-                online: machines.Count(m => m.IsOnline),
-                offline: machines.Count(m => !m.IsOnline),
-                needingUpdates: machines.Count(m => m.PendingUpdates > 0)
-            );
+            lock (_lock)
+            {
+                var machines = _machines.Values.ToList();
+                return (
+                    total: machines.Count,
+                    online: machines.Count(m => m.IsOnline),
+                    offline: machines.Count(m => !m.IsOnline),
+                    needingUpdates: machines.Count(m => m.PendingUpdates > 0)
+                );
+            }
         }
 
         /// <summary>

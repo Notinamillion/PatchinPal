@@ -1,4 +1,5 @@
 using System;
+using System.Configuration;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -20,6 +21,7 @@ namespace PatchinPal.Client
         private readonly UpdateManager _updateManager;
         private readonly ScheduleManager _scheduleManager;
         private readonly JavaScriptSerializer _serializer;
+        private readonly string _apiKey;
 
         public HttpServer(int port, UpdateManager updateManager, ScheduleManager scheduleManager)
         {
@@ -27,6 +29,7 @@ namespace PatchinPal.Client
             _updateManager = updateManager;
             _scheduleManager = scheduleManager;
             _serializer = new JavaScriptSerializer();
+            _apiKey = ConfigurationManager.AppSettings["ApiKey"] ?? "";
         }
 
         public void Start()
@@ -95,10 +98,14 @@ namespace PatchinPal.Client
 
                 if (method == "POST" && path == "/api/command")
                 {
+                    if (!ValidateApiKey(context))
+                        return;
                     HandleCommand(context);
                 }
                 else if (method == "GET" && path == "/api/status")
                 {
+                    if (!ValidateApiKey(context))
+                        return;
                     HandleStatusRequest(context);
                 }
                 else if (method == "GET" && path == "/api/ping")
@@ -115,6 +122,25 @@ namespace PatchinPal.Client
                 Console.WriteLine($"Request handler error: {ex.Message}");
                 SendResponse(context, 500, new { error = ex.Message });
             }
+        }
+
+        /// <summary>
+        /// Validates the X-API-Key header against the configured key.
+        /// Returns true if valid or if no key is configured. Sends 403 and returns false otherwise.
+        /// </summary>
+        private bool ValidateApiKey(HttpListenerContext context)
+        {
+            if (string.IsNullOrEmpty(_apiKey))
+                return true; // Auth disabled if no key configured
+
+            string providedKey = context.Request.Headers["X-API-Key"];
+            if (!string.Equals(providedKey, _apiKey, StringComparison.Ordinal))
+            {
+                Console.WriteLine($"[{DateTime.Now:HH:mm:ss}] Auth failed from {context.Request.RemoteEndPoint.Address}");
+                SendResponse(context, 403, new { error = "Invalid or missing API key" });
+                return false;
+            }
+            return true;
         }
 
         private void HandlePing(HttpListenerContext context)

@@ -1,4 +1,5 @@
 using System;
+using System.Configuration;
 using System.IO;
 using System.Net;
 using System.Text;
@@ -15,11 +16,13 @@ namespace PatchinPal.Server
         private readonly MachineRepository _repository;
         private readonly JavaScriptSerializer _serializer;
         private readonly int _timeout = 30000; // 30 seconds
+        private readonly string _apiKey;
 
         public ClientManager(MachineRepository repository)
         {
             _repository = repository;
             _serializer = new JavaScriptSerializer();
+            _apiKey = ConfigurationManager.AppSettings["ApiKey"] ?? "";
         }
 
         /// <summary>
@@ -136,6 +139,12 @@ namespace PatchinPal.Server
                 request.ContentType = "application/json";
                 request.Timeout = _timeout;
 
+                // Add API key header if configured
+                if (!string.IsNullOrEmpty(_apiKey))
+                {
+                    request.Headers.Add("X-API-Key", _apiKey);
+                }
+
                 byte[] data = Encoding.UTF8.GetBytes(json);
                 request.ContentLength = data.Length;
 
@@ -187,6 +196,12 @@ namespace PatchinPal.Server
                 var request = (HttpWebRequest)WebRequest.Create(url);
                 request.Method = "GET";
                 request.Timeout = _timeout;
+
+                // Add API key header if configured
+                if (!string.IsNullOrEmpty(_apiKey))
+                {
+                    request.Headers.Add("X-API-Key", _apiKey);
+                }
 
                 using (var response = (HttpWebResponse)request.GetResponse())
                 using (var reader = new StreamReader(response.GetResponseStream()))

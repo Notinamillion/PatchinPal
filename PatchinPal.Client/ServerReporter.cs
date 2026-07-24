@@ -17,6 +17,7 @@ namespace PatchinPal.Client
     {
         private readonly UpdateManager _updateManager;
         private readonly JavaScriptSerializer _serializer;
+        private readonly string _apiKey;
         private Timer _reportTimer;
         private bool _isRunning;
         private string _serverAddress;
@@ -28,6 +29,7 @@ namespace PatchinPal.Client
         {
             _updateManager = updateManager;
             _serializer = new JavaScriptSerializer();
+            _apiKey = ConfigurationManager.AppSettings["ApiKey"] ?? "";
             LoadConfiguration();
         }
 
@@ -161,6 +163,12 @@ namespace PatchinPal.Client
                 request.Method = "POST";
                 request.ContentType = "application/json";
                 request.Timeout = 5000; // 5 seconds
+
+                // Add API key header if configured
+                if (!string.IsNullOrEmpty(_apiKey))
+                {
+                    request.Headers.Add("X-API-Key", _apiKey);
+                }
 
                 byte[] data = Encoding.UTF8.GetBytes(json);
                 request.ContentLength = data.Length;

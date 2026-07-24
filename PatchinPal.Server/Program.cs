@@ -72,7 +72,7 @@ namespace PatchinPal.Server
 
             // Start HTTP server to receive client reports
             int serverPort = int.Parse(ConfigurationManager.AppSettings["ServerPort"] ?? "8092");
-            _httpServer = new HttpServer(serverPort, _repository);
+            _httpServer = new HttpServer(serverPort, _repository, _networkScanner, _clientManager);
             _httpServer.Start();
             Console.WriteLine();
 
@@ -101,59 +101,67 @@ namespace PatchinPal.Server
                 // Check if minimized (user manually minimized console)
                 _trayHelper?.CheckMinimized();
 
-                if (Console.KeyAvailable)
+                try
                 {
-                    string input = Console.ReadLine()?.Trim();
-                    if (string.IsNullOrEmpty(input))
-                        continue;
-
-                    string[] parts = input.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
-                    string command = parts[0].ToLower();
-                    string[] cmdArgs = parts.Skip(1).ToArray();
-
-                    try
+                    if (Environment.UserInteractive && Console.KeyAvailable)
                     {
-                        switch (command)
+                        string input = Console.ReadLine()?.Trim();
+                        if (string.IsNullOrEmpty(input))
+                            continue;
+
+                        string[] parts = input.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                        string command = parts[0].ToLower();
+                        string[] cmdArgs = parts.Skip(1).ToArray();
+
+                        try
                         {
-                            case "scan":
-                                ScanNetwork(cmdArgs);
-                                break;
-                            case "list":
-                                ListMachines(cmdArgs);
-                                break;
-                            case "status":
-                                ShowStatus(cmdArgs);
-                                break;
-                            case "update":
-                                UpdateMachine(cmdArgs);
-                                break;
-                            case "check":
-                                CheckForUpdates(cmdArgs);
-                                break;
-                            case "schedule":
-                                ScheduleUpdate(cmdArgs);
-                                break;
-                            case "help":
-                                ShowHelp();
-                                break;
-                            case "exit":
-                            case "quit":
-                                _running = false;
-                                break;
-                            default:
-                                Console.WriteLine($"Unknown command: {command}. Type 'help' for available commands.");
-                                break;
+                            switch (command)
+                            {
+                                case "scan":
+                                    ScanNetwork(cmdArgs);
+                                    break;
+                                case "list":
+                                    ListMachines(cmdArgs);
+                                    break;
+                                case "status":
+                                    ShowStatus(cmdArgs);
+                                    break;
+                                case "update":
+                                    UpdateMachine(cmdArgs);
+                                    break;
+                                case "check":
+                                    CheckForUpdates(cmdArgs);
+                                    break;
+                                case "schedule":
+                                    ScheduleUpdate(cmdArgs);
+                                    break;
+                                case "help":
+                                    ShowHelp();
+                                    break;
+                                case "exit":
+                                case "quit":
+                                    _running = false;
+                                    break;
+                                default:
+                                    Console.WriteLine($"Unknown command: {command}. Type 'help' for available commands.");
+                                    break;
+                            }
                         }
-                    }
-                    catch (Exception ex)
-                    {
-                        Console.ForegroundColor = ConsoleColor.Red;
-                        Console.WriteLine($"Error: {ex.Message}");
-                        Console.ResetColor();
-                    }
+                        catch (Exception ex)
+                        {
+                            Console.ForegroundColor = ConsoleColor.Red;
+                            Console.WriteLine($"Error: {ex.Message}");
+                            Console.ResetColor();
+                        }
 
-                    if (_running)
-                        Console.Write("\nPatchinPal> ");
+                        if (_running)
+                            Console.Write("\nPatchinPal> ");
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // Console input not available (running in background or as service)
+                    // Just continue running the HTTP server without console interaction
                 }
 
                 Thread.Sleep(100);

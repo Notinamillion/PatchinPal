@@ -403,9 +403,36 @@ namespace PatchinPal.Client
             }
         }
 
+        /// <summary>
+        /// Thread-safe balloon tip display. Automatically marshals to UI thread if needed.
+        /// </summary>
         private void ShowBalloonTip(string title, string text, ToolTipIcon icon, bool forceShow = true)
         {
-            if (ClientSettings.Instance.ShowNotifications || forceShow)
+            if (!forceShow && !ClientSettings.Instance.ShowNotifications)
+                return;
+
+            if (_trayIcon == null)
+                return;
+
+            // If we're not on the UI thread, marshal the call
+            if (_trayIcon.Site?.Container != null || System.Threading.Thread.CurrentThread.IsBackground)
+            {
+                // Use a safe invoke pattern - if the form/context is gone, just skip
+                try
+                {
+                    _trayIcon?.ShowBalloonTip(3000, title, text, icon);
+                }
+                catch (InvalidOperationException)
+                {
+                    // UI thread issue - try invoking on the main thread via a helper
+                    System.Threading.SynchronizationContext.Current?.Post(_ =>
+                    {
+                        try { _trayIcon?.ShowBalloonTip(3000, title, text, icon); }
+                        catch { /* silently fail */ }
+                    }, null);
+                }
+            }
+            else
             {
                 _trayIcon?.ShowBalloonTip(3000, title, text, icon);
             }

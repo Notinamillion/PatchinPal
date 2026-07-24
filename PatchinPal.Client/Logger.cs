@@ -17,7 +17,6 @@ namespace PatchinPal.Client
             Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData),
             "PatchinPal", "Client", "logs");
 
-        private static readonly string LogFilePath = Path.Combine(LogDirectory, $"patchinpal-{DateTime.Now:yyyy-MM-dd}.log");
         private static readonly object _lock = new object();
         private static bool _isEnabled = true;
         private static LogLevel _minimumLevel = LogLevel.Info;
@@ -85,8 +84,9 @@ namespace PatchinPal.Client
                 {
                     string logEntry = $"[{DateTime.Now:yyyy-MM-dd HH:mm:ss}] [{level.ToString().ToUpper()}] {message}";
 
-                    // Write to file
-                    File.AppendAllText(LogFilePath, logEntry + Environment.NewLine);
+                    // Compute log path per-write so date rollover works correctly
+                    string logFilePath = Path.Combine(LogDirectory, $"patchinpal-{DateTime.Now:yyyy-MM-dd}.log");
+                    File.AppendAllText(logFilePath, logEntry + Environment.NewLine);
 
                     // Also write to console if available
                     if (Console.OpenStandardOutput() != Stream.Null)

@@ -16,6 +16,7 @@ namespace PatchinPal.Client
         private IUpdateSearcher _updateSearcher;
         private List<WindowsUpdate> _cachedUpdates;
         private DateTime _lastUpdateCheck;
+        private readonly object _lock = new object();
 
         public UpdateManager()
         {
@@ -38,14 +39,15 @@ namespace PatchinPal.Client
         /// </summary>
         public List<WindowsUpdate> CheckForUpdates()
         {
+            ISearchResult searchResult = null;
             try
             {
                 Console.WriteLine("Searching for updates...");
 
                 // Search for updates that are not installed
-                ISearchResult searchResult = _updateSearcher.Search("IsInstalled=0 and Type='Software'");
+                searchResult = _updateSearcher.Search("IsInstalled=0 and Type='Software'");
 
-                _cachedUpdates.Clear();
+                var results = new List<WindowsUpdate>();
 
                 foreach (IUpdate update in searchResult.Updates)
                 {
@@ -61,18 +63,26 @@ namespace PatchinPal.Client
                         Severity = MapSeverity(update)
                     };
 
-                    _cachedUpdates.Add(windowsUpdate);
+                    results.Add(windowsUpdate);
                 }
 
-                _lastUpdateCheck = DateTime.Now;
-                Console.WriteLine($"Found {_cachedUpdates.Count} update(s)");
+                lock (_lock)
+                {
+                    _cachedUpdates = results;
+                    _lastUpdateCheck = DateTime.Now;
+                }
 
-                return _cachedUpdates;
+                Console.WriteLine($"Found {_cachedUpdates.Count} update(s)");
+                return new List<WindowsUpdate>(_cachedUpdates);
             }
             catch (COMException ex)
             {
                 Console.WriteLine($"Error checking for updates: {ex.Message}");
                 return new List<WindowsUpdate>();
+            }
+            finally
+            {
+                ReleaseComObject(searchResult);
             }
         }
 
@@ -82,15 +92,34 @@ namespace PatchinPal.Client
         /// <param name="aggressive">If true, installs all updates without prompting and forces installation</param>
         public UpdateResponse InstallUpdates(bool aggressive)
         {
+            ISearchResult searchResult = null;
+            IDownloadResult downloadResult = null;
+            IInstallationResult installResult = null;
+            UpdateCollection updatesToInstall = null;
+            IUpdateDownloader downloader = null;
+            IUpdateInstaller installer = null;
+
             try
             {
                 // First check for updates if cache is empty or old
-                if (_cachedUpdates.Count == 0 || (DateTime.Now - _lastUpdateCheck).TotalMinutes > 30)
+                List<WindowsUpdate> cached;
+                DateTime lastCheck;
+                lock (_lock)
                 {
-                    CheckForUpdates();
+                    cached = _cachedUpdates;
+                    lastCheck = _lastUpdateCheck;
                 }
 
-                if (_cachedUpdates.Count == 0)
+                if (cached.Count == 0 || (DateTime.Now - lastCheck).TotalMinutes > 30)
+                {
+                    CheckForUpdates();
+                    lock (_lock)
+                    {
+                        cached = _cachedUpdates;
+                    }
+                }
+
+                if (cached.Count == 0)
                 {
                     return new UpdateResponse
                     {
@@ -101,10 +130,10 @@ namespace PatchinPal.Client
                     };
                 }
 
-                Console.WriteLine($"Installing {_cachedUpdates.Count} update(s)...");
+                Console.WriteLine($"Installing {cached.Count} update(s)...");
 
-                // Search for updates again to get IUpdate objects
-                ISearchResult searchResult = _updateSearcher.Search("IsInstalled=0 and Type='Software'");
+                // Search for updates to get IUpdate objects for installation
+                searchResult = _updateSearcher.Search("IsInstalled=0 and Type='Software'");
 
                 if (searchResult.Updates.Count == 0)
                 {
@@ -118,7 +147,7 @@ namespace PatchinPal.Client
                 }
 
                 // Create update collection
-                UpdateCollection updatesToInstall = new UpdateCollection();
+                updatesToInstall = new UpdateCollection();
 
                 foreach (IUpdate update in searchResult.Updates)
                 {
@@ -131,10 +160,10 @@ namespace PatchinPal.Client
 
                 // Download updates if needed
                 Console.WriteLine("Downloading updates...");
-                var downloader = _updateSession.CreateUpdateDownloader();
+                downloader = _updateSession.CreateUpdateDownloader();
                 downloader.Updates = updatesToInstall;
 
-                IDownloadResult downloadResult = downloader.Download();
+                downloadResult = downloader.Download();
 
                 if (downloadResult.ResultCode != OperationResultCode.orcSucceeded
                     && downloadResult.ResultCode != OperationResultCode.orcSucceededWithErrors)
@@ -150,23 +179,25 @@ namespace PatchinPal.Client
 
                 // Install updates
                 Console.WriteLine("Installing updates...");
-                var installer = _updateSession.CreateUpdateInstaller();
+                installer = _updateSession.CreateUpdateInstaller();
                 installer.Updates = updatesToInstall;
 
                 if (aggressive)
                 {
                     installer.AllowSourcePrompts = false;
-                    // ForceQuiet not available in this API version, but AllowSourcePrompts=false provides similar behavior
                 }
 
-                IInstallationResult installResult = installer.Install();
+                installResult = installer.Install();
 
                 bool rebootRequired = installResult.RebootRequired;
                 bool success = installResult.ResultCode == OperationResultCode.orcSucceeded
                             || installResult.ResultCode == OperationResultCode.orcSucceededWithErrors;
 
                 // Clear cache after installation
-                _cachedUpdates.Clear();
+                lock (_lock)
+                {
+                    _cachedUpdates.Clear();
+                }
 
                 return new UpdateResponse
                 {
@@ -186,6 +217,23 @@ namespace PatchinPal.Client
                     Timestamp = DateTime.Now
                 };
             }
+            finally
+            {
+                // Clean up COM objects to prevent memory leaks
+                ReleaseComObject(installResult);
+                ReleaseComObject(installer);
+                ReleaseComObject(downloadResult);
+                ReleaseComObject(downloader);
+                if (updatesToInstall != null)
+                {
+                    for (int i = 0; i < updatesToInstall.Count; i++)
+                    {
+                        ReleaseComObject(updatesToInstall[i]);
+                    }
+                    ReleaseComObject(updatesToInstall);
+                }
+                ReleaseComObject(searchResult);
+            }
         }
 
         /// <summary>
@@ -193,12 +241,18 @@ namespace PatchinPal.Client
         /// </summary>
         public UpdateResponse GetStatus()
         {
+            List<WindowsUpdate> updates;
+            lock (_lock)
+            {
+                updates = new List<WindowsUpdate>(_cachedUpdates);
+            }
+
             return new UpdateResponse
             {
                 Success = true,
                 Message = "Status retrieved",
-                AvailableUpdates = _cachedUpdates,
-                Status = _cachedUpdates.Count > 0 ? UpdateStatus.UpdatesAvailable : UpdateStatus.UpToDate,
+                AvailableUpdates = updates,
+                Status = updates.Count > 0 ? UpdateStatus.UpdatesAvailable : UpdateStatus.UpToDate,
                 Timestamp = DateTime.Now
             };
         }
@@ -238,6 +292,24 @@ namespace PatchinPal.Client
             catch
             {
                 return UpdateSeverity.Moderate;
+            }
+        }
+
+        /// <summary>
+        /// Safely release a COM object
+        /// </summary>
+        private static void ReleaseComObject(object obj)
+        {
+            if (obj != null)
+            {
+                try
+                {
+                    Marshal.ReleaseComObject(obj);
+                }
+                catch
+                {
+                    // Ignore release failures
+                }
             }
         }
     }
